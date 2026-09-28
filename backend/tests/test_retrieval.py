@@ -91,3 +91,69 @@ class TestRRFFusion:
         vector = [_v(1, 0.9), _v(2, 0.8)]
         fused = _reciprocal_rank_fusion(vector, [])
         assert len(fused) == 2
+
+
+def compute_recall_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> float:
+    """Compute Recall@K = |Retrieved@K ∩ Relevant| / |Relevant|"""
+    if not relevant_ids:
+        return 0.0
+    top_k = retrieved_ids[:k]
+    hits = sum(1 for cid in top_k if cid in relevant_ids)
+    return hits / len(relevant_ids)
+
+
+def compute_mrr(retrieved_ids: list[str], relevant_ids: set[str]) -> float:
+    """Compute Mean Reciprocal Rank (MRR) = 1 / first_relevant_rank"""
+    for rank, cid in enumerate(retrieved_ids, start=1):
+        if cid in relevant_ids:
+            return 1.0 / rank
+    return 0.0
+
+
+class TestRetrievalBenchmark:
+    """Retrieval benchmark evaluating Recall@K and MRR for dense, sparse, and hybrid search."""
+
+    def test_recall_at_k_calculation(self):
+        relevant = {"c1", "c2"}
+        retrieved = ["c3", "c1", "c4", "c2", "c5"]
+
+        assert compute_recall_at_k(retrieved, relevant, k=1) == 0.0
+        assert compute_recall_at_k(retrieved, relevant, k=2) == 0.5  # c1 found
+        assert compute_recall_at_k(retrieved, relevant, k=4) == 1.0  # c1 and c2 found
+
+    def test_mrr_calculation(self):
+        relevant = {"target"}
+        assert compute_mrr(["target", "other"], relevant) == 1.0
+        assert compute_mrr(["other", "target"], relevant) == 0.5
+        assert compute_mrr(["other", "other2", "target"], relevant) == pytest.approx(1.0 / 3)
+        assert compute_mrr(["other1", "other2"], relevant) == 0.0
+
+    def test_hybrid_improves_or_matches_mrr_over_single_modality(self):
+        """
+        Scenario: Query with both keyword entity (favoring BM25) and conceptual match (favoring vector).
+        Relevant target: chunk-1.
+        Vector rank for chunk-1: #3
+        BM25 rank for chunk-1: #2
+        Hybrid RRF: chunk-1 is elevated to #1 due to reciprocal rank summation.
+        """
+        relevant = {str(uuid.UUID(int=1))}
+
+        vector = [_v(2, 0.95), _v(3, 0.90), _v(1, 0.85)]
+        bm25 = [_b(4, 0.92), _b(1, 0.88), _b(5, 0.80)]
+
+        v_ids = [str(r.chunk_id) for r in vector]
+        b_ids = [r.chunk_id for r in bm25]
+
+        mrr_vector = compute_mrr(v_ids, relevant)  # 1/3 ≈ 0.333
+        mrr_bm25 = compute_mrr(b_ids, relevant)    # 1/2 = 0.5
+
+        fused = _reciprocal_rank_fusion(vector, bm25)
+        fused_ids = [r.chunk_id for r in fused]
+        mrr_hybrid = compute_mrr(fused_ids, relevant)
+
+        # Chunk 1 appears in both, elevating it to rank 1 in hybrid
+        assert fused_ids[0] == str(uuid.UUID(int=1))
+        assert mrr_hybrid == 1.0
+        assert mrr_hybrid > mrr_vector
+        assert mrr_hybrid > mrr_bm25
+

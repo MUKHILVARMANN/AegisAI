@@ -4,6 +4,7 @@ from app.models.chunk import Chunk
 from app.models.conversation import Conversation, Message, MessageRole
 from app.models.trace import Trace
 from app.models.feedback import Feedback, EvaluationRun, EvaluationResult
+from app.models.user import User, UserRole
 
 __all__ = [
     "Document", "DocumentSection", "DocumentStatus", "DocumentType",
@@ -11,4 +12,5 @@ __all__ = [
     "Conversation", "Message", "MessageRole",
     "Trace",
     "Feedback", "EvaluationRun", "EvaluationResult",
+    "User", "UserRole",
 ]

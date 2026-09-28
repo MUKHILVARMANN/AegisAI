@@ -9,13 +9,13 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.database import init_db
-from app.routers import documents, chat, traces, feedback, evaluations, health
+from app.rate_limit import limiter
+from app.routers import documents, chat, chat_stream, traces, feedback, evaluations, health, auth, conversations
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 structlog.configure(
@@ -29,8 +29,16 @@ structlog.configure(
 logger = structlog.get_logger()
 
 
-# ─── Rate Limiter ─────────────────────────────────────────────────────────────
-limiter = Limiter(key_func=get_remote_address, storage_uri=settings.redis_url)
+# ─── Production Secret Guard ─────────────────────────────────────────────────
+# Refuse to boot in production when the JWT signing key is still the default.
+# DEBUG=1 explicitly opts out for local development.
+_INSECURE_DEFAULT_SECRET = "change-me-in-production"
+if settings.secret_key == _INSECURE_DEFAULT_SECRET and not settings.debug:
+    raise RuntimeError(
+        "Refusing to start: secret_key is still the insecure default "
+        "(JWTs would be forgeable). Set SECRET_KEY in your environment, "
+        "or set DEBUG=1 for local development."
+    )
 
 
 # ─── Lifespan ────────────────────────────────────────────────────────────────
@@ -111,8 +119,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ─── Routers ─────────────────────────────────────────────────────────────────
+app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
+app.include_router(chat_stream.router)
+app.include_router(conversations.router)
 app.include_router(traces.router)
 app.include_router(feedback.router)
 app.include_router(evaluations.router)

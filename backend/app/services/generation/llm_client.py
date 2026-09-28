@@ -60,7 +60,11 @@ Rules:
 """
 
 
-def _build_user_prompt(query: str, evidence_chunks: list[dict]) -> str:
+def _build_user_prompt(
+    query: str,
+    evidence_chunks: list[dict],
+    history: list[dict] | None = None,
+) -> str:
     evidence_text = "\n\n".join([
         f"[CHUNK {i+1}]\nChunk ID: {c['chunk_id']}\nDocument ID: {c['document_id']}\n"
         f"Page: {c.get('page_number', 'N/A')} | Heading: {c.get('heading', 'N/A')}\n"
@@ -68,10 +72,22 @@ def _build_user_prompt(query: str, evidence_chunks: list[dict]) -> str:
         for i, c in enumerate(evidence_chunks)
     ])
 
+    history_block = ""
+    if history:
+        turns = "\n".join(
+            f"[{turn.get('role', 'user').upper()}]: {turn.get('content', '')}"
+            for turn in history
+        )
+        history_block = f"""
+CONVERSATION HISTORY (most recent last, for context only — do not cite it):
+{turns}
+
+"""
+
     return f"""EVIDENCE:
 {evidence_text}
 
-QUESTION:
+{history_block}QUESTION:
 {query}
 
 Respond with the JSON schema as instructed."""
@@ -80,27 +96,36 @@ Respond with the JSON schema as instructed."""
 async def generate_answer(
     query: str,
     evidence_chunks: list[dict],
+    history: list[dict] | None = None,
 ) -> LLMResponse:
     """
     Generate a structured answer grounded in evidence chunks.
+
+    `history` is an optional list of prior conversation turns
+    ([{"role": "user" | "assistant" | "system", "content": str}]) injected
+    for multi-turn context. The answer is still grounded ONLY in evidence.
     Dispatches to OpenAI or Gemini based on config.
     """
     if settings.llm_provider == "openai":
-        return await _generate_openai(query, evidence_chunks)
+        return await _generate_openai(query, evidence_chunks, history)
     elif settings.llm_provider == "gemini":
-        return await _generate_gemini(query, evidence_chunks)
+        return await _generate_gemini(query, evidence_chunks, history)
     else:
         raise ValueError(f"Unknown LLM provider: {settings.llm_provider!r}")
 
 
-async def _generate_openai(query: str, evidence_chunks: list[dict]) -> LLMResponse:
+async def _generate_openai(
+    query: str,
+    evidence_chunks: list[dict],
+    history: list[dict] | None = None,
+) -> LLMResponse:
     """Generate answer using OpenAI GPT."""
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
 
     system_prompt = _build_system_prompt()
-    user_prompt = _build_user_prompt(query, evidence_chunks)
+    user_prompt = _build_user_prompt(query, evidence_chunks, history)
 
     t0 = time.perf_counter()
 
@@ -139,7 +164,11 @@ async def _generate_openai(query: str, evidence_chunks: list[dict]) -> LLMRespon
     )
 
 
-async def _generate_gemini(query: str, evidence_chunks: list[dict]) -> LLMResponse:
+async def _generate_gemini(
+    query: str,
+    evidence_chunks: list[dict],
+    history: list[dict] | None = None,
+) -> LLMResponse:
     """Generate answer using Google Gemini."""
     import google.generativeai as genai
 
@@ -147,7 +176,7 @@ async def _generate_gemini(query: str, evidence_chunks: list[dict]) -> LLMRespon
     model = genai.GenerativeModel(settings.gemini_model)
 
     system_prompt = _build_system_prompt()
-    user_prompt = _build_user_prompt(query, evidence_chunks)
+    user_prompt = _build_user_prompt(query, evidence_chunks, history)
 
     t0 = time.perf_counter()
 

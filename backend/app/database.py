@@ -44,5 +44,5 @@ async def init_db():
     """Create all tables and enable pgvector extension."""
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        from app.models import document, chunk, conversation, trace, feedback  # noqa: F401
+        from app.models import document, chunk, conversation, trace, feedback, user  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)

@@ -86,7 +86,19 @@ class PipelineTrace:
 async def save_trace(db, trace: PipelineTrace) -> None:
     """Save a finalized trace to the database."""
     from app.models.trace import Trace
-    db_trace = Trace(**trace.to_db_dict())
+    db_dict = trace.to_db_dict()
+
+    # conversation_id is a UUID column. Clients may send their own provisional
+    # ids (e.g. "conv-mxxxxx") before the backend assigns a real one — drop
+    # invalid values here instead of failing the whole trace insert.
+    conv_id = db_dict.get("conversation_id")
+    if conv_id is not None:
+        try:
+            db_dict["conversation_id"] = str(uuid.UUID(str(conv_id)))
+        except (ValueError, AttributeError, TypeError):
+            db_dict["conversation_id"] = None
+
+    db_trace = Trace(**db_dict)
     db.add(db_trace)
     await db.commit()
     logger.debug(f"Trace saved: request_id={trace.request_id}")

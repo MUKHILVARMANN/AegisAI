@@ -68,6 +68,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       MINIO_ENDPOINT: minio:9000
+      # Local/dev stack: allow the default SECRET_KEY (guarded in app.main).
+      # Remove this line and set a real SECRET_KEY in .env for production.
+      DEBUG: "1"
     volumes:
       - ./backend:/app
     ports:

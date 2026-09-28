@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import String, Text, DateTime, Enum, func
+from sqlalchemy import String, Text, DateTime, Enum, ForeignKey, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -54,7 +54,9 @@ class DocumentSection(Base):
     __tablename__ = "document_sections"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     parent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=True)
     heading: Mapped[str] = mapped_column(String(512), nullable=True)
     page_start: Mapped[int] = mapped_column(nullable=True)

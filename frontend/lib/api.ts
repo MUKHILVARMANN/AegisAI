@@ -1,9 +1,72 @@
 /**
  * AegisAI — Frontend API Client
  * Connects to FastAPI backend with full type safety and realistic demo fallbacks.
+ * Supports JWT authentication, SSE streaming, and conversation memory.
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth Token Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _accessToken: string | null = null;
+let _refreshToken: string | null = null;
+
+if (typeof window !== "undefined") {
+  _accessToken = localStorage.getItem("aegisai_access_token");
+  _refreshToken = localStorage.getItem("aegisai_refresh_token");
+}
+
+function setTokens(access: string, refresh: string) {
+  _accessToken = access;
+  _refreshToken = refresh;
+  if (typeof window !== "undefined") {
+    localStorage.setItem("aegisai_access_token", access);
+    localStorage.setItem("aegisai_refresh_token", refresh);
+  }
+}
+
+function clearTokens() {
+  _accessToken = null;
+  _refreshToken = null;
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("aegisai_access_token");
+    localStorage.removeItem("aegisai_refresh_token");
+  }
+}
+
+function getAuthHeaders(): Record<string, string> {
+  if (_accessToken) {
+    return { Authorization: `Bearer ${_accessToken}` };
+  }
+  return {};
+}
+
+export interface AuthTokens {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  username: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+  last_login: string | null;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+  last_message_preview: string;
+  last_role: string | null;
+}
 
 export interface Citation {
   document_id: string;
@@ -31,6 +94,14 @@ export interface ChatResponse {
   conversation_id: string;
   route_taken: "retrieve_knowledge" | "query_structured_data" | "summarize_document" | "multi_step_workflow" | "clarification";
   latency_ms: number;
+}
+
+// SSE streaming event types
+export type StreamEventType = "conversation" | "routing" | "embedding" | "retrieval" | "reranking" | "generating" | "token" | "validation" | "done";
+
+export interface StreamEvent {
+  type: StreamEventType;
+  data: Record<string, any>;
 }
 
 export interface DocumentItem {
@@ -275,23 +346,260 @@ const MOCK_RUNS: EvalRun[] = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// API Methods
+// SSE Streaming Simulation for Resilient Demo Mode
 // ─────────────────────────────────────────────────────────────────────────────
 
+async function _simulateStream(
+  payload: ChatRequest,
+  onEvent: (event: StreamEvent) => void
+) {
+  const convId = payload.conversation_id || `conv-${Date.now().toString(36)}`;
+  const reqId = `req-${Date.now().toString(36)}`;
+
+  // 1. conversation event
+  onEvent({
+    type: "conversation",
+    data: { id: convId, title: payload.query.slice(0, 36) + "..." },
+  });
+
+  await new Promise((r) => setTimeout(r, 120));
+
+  const isFin =
+    payload.query.toLowerCase().includes("margin") ||
+    payload.query.toLowerCase().includes("revenue") ||
+    payload.query.toLowerCase().includes("q3");
+  const isSecurity =
+    payload.query.toLowerCase().includes("soc") ||
+    payload.query.toLowerCase().includes("audit") ||
+    payload.query.toLowerCase().includes("security");
+
+  let route: ChatResponse["route_taken"] = "retrieve_knowledge";
+  let answer = "";
+  let citations: Citation[] = [];
+
+  if (isFin) {
+    route = "query_structured_data";
+    answer =
+      "Based on the Q3 2024 Financial Performance model:\n\n1. **North America Operations** achieved a gross revenue of **$48.6M** with an operating margin of **24.2%**.\n2. **EMEA Operations** reported **$31.2M** in revenue with an operating margin of **19.8%**.\n3. The calculated **net margin delta** between North America and EMEA is **+4.4 percentage points**, driven by lower cloud infrastructure overhead and regional licensing efficiency in NA.\n\nAll figures reconcile with table 4.2 in the Q3 summary.";
+    citations = [
+      {
+        document_id: "doc-fin-q3-rev",
+        document_name: "Q3_2024_Financial_Performance_and_Projections.xlsx",
+        page: 4,
+        chunk_id: "chunk-fin-tab-04",
+        snippet:
+          "Table 4.2 Regional P&L Breakdown: NA Gross Rev $48.6M, Op Margin 24.2%; EMEA Gross Rev $31.2M, Op Margin 19.8%. Net Delta: +4.40%.",
+        score: 0.96,
+      },
+      {
+        document_id: "doc-fin-q3-rev",
+        document_name: "Q3_2024_Financial_Performance_and_Projections.xlsx",
+        page: 5,
+        chunk_id: "chunk-fin-notes-02",
+        snippet:
+          "Regional cost structure analysis notes: NA cloud hosting efficiency lowered COGS by 310 bps compared to EU multi-zone redundancy requirements.",
+        score: 0.91,
+      },
+    ];
+  } else if (isSecurity) {
+    route = "retrieve_knowledge";
+    answer =
+      "According to the Enterprise Cloud Security Compliance documentation (SOC 2 Type II audit controls):\n\n- **Audit Log Retention**: All access, authentication, and privilege escalation logs must be retained in immutable cold storage for a minimum of **365 days (1 year)**.\n- **Encryption Standard**: Logs must be encrypted in transit using **TLS 1.3** and at rest using **AES-256-GCM** with KMS customer-managed keys rotated every 90 days.\n- **Automated Verification**: Daily checksum integrity verifications are executed at 00:00 UTC with automated pager alerts upon hash mismatch.";
+    citations = [
+      {
+        document_id: "doc-sec-2024-10k",
+        document_name: "Enterprise_Cloud_Security_Compliance_2024.pdf",
+        page: 14,
+        chunk_id: "chunk-sec-audit-09",
+        snippet:
+          "Section 4.1.3: Audit Log Storage Lifecycle. System authentication and access records shall be retained for 365 days in write-once-read-many (WORM) compliant S3 buckets.",
+        score: 0.98,
+      },
+      {
+        document_id: "doc-sec-2024-10k",
+        document_name: "Enterprise_Cloud_Security_Compliance_2024.pdf",
+        page: 16,
+        chunk_id: "chunk-sec-crypt-03",
+        snippet:
+          "Section 4.3: Cryptographic Controls. All telemetry and logging pipelines require AES-256-GCM cipher suites with automated key rotation cycles.",
+        score: 0.92,
+      },
+    ];
+  } else {
+    answer = `AegisAI analyzed your query across indexed enterprise documents using Hybrid Search (Dense Embeddings + BM25) and Cohere Rerank.\n\nKey Findings:\n- Verified against authorized knowledge sources.\n- Parent-child context synthesis preserved heading and document lineage.\n- Citations are validated strictly against retrieved evidence with zero hallucination guarantee.`;
+    citations = [
+      {
+        document_id: "doc-arch-blueprint",
+        document_name: "AegisAI_Architecture_and_Engineering_Spec.docx",
+        page: 3,
+        chunk_id: "chunk-arch-core-01",
+        snippet:
+          "AegisAI enforces deterministic grounding: every claim must map to top-K reranked evidence with confidence bounds.",
+        score: 0.94,
+      },
+    ];
+  }
+
+  // 2. routing event
+  onEvent({
+    type: "routing",
+    data: {
+      route,
+      confidence: 0.98,
+      reasoning: "Intent classifier matched structured query heuristics",
+    },
+  });
+  await new Promise((r) => setTimeout(r, 140));
+
+  // 3. embedding event
+  onEvent({
+    type: "embedding",
+    data: {
+      dense_dim: 1024,
+      model: "bge-large-en-v1.5",
+      latency_ms: 42,
+    },
+  });
+  await new Promise((r) => setTimeout(r, 150));
+
+  // 4. retrieval event
+  onEvent({
+    type: "retrieval",
+    data: {
+      dense_candidates: 20,
+      bm25_candidates: 20,
+      fused: 25,
+      latency_ms: 128,
+    },
+  });
+  await new Promise((r) => setTimeout(r, 160));
+
+  // 5. reranking event
+  onEvent({
+    type: "reranking",
+    data: {
+      model: "cross-encoder/ms-marco-MiniLM-L-6-v2",
+      input_candidates: 25,
+      output_top_k: citations.length,
+      latency_ms: 185,
+    },
+  });
+  await new Promise((r) => setTimeout(r, 120));
+
+  // 6. generating event
+  onEvent({
+    type: "generating",
+    data: {
+      model: "claude-3-5-sonnet",
+      prompt_tokens: 1420,
+    },
+  });
+
+  // 7. stream tokens in words/chunks
+  const words = answer.split(/(\s+)/);
+  for (let i = 0; i < words.length; i++) {
+    onEvent({
+      type: "token",
+      data: { text: words[i] },
+    });
+    await new Promise((r) => setTimeout(r, 18));
+  }
+
+  // 8. validation event
+  onEvent({
+    type: "validation",
+    data: {
+      passed: true,
+      citation_precision: 1.0,
+      faithfulness_score: 0.97,
+      issues: [],
+    },
+  });
+  await new Promise((r) => setTimeout(r, 80));
+
+  // 9. done event
+  onEvent({
+    type: "done",
+    data: {
+      answer,
+      citations,
+      confidence: "high",
+      limitations: [
+        "Information is strictly bounded to documents indexed up to current snapshot.",
+      ],
+      request_id: reqId,
+      conversation_id: convId,
+      route_taken: route,
+      latency_ms: 890,
+    },
+  });
+}
+
 export const api = {
-  // Chat
+  // ─── Authentication ──────────────────────────────────────────────────────
+  async register(email: string, username: string, password: string): Promise<AuthTokens> {
+    const res = await fetch(`${API_BASE}/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, username, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Registration failed" }));
+      throw new Error(err.detail || "Registration failed");
+    }
+    const tokens: AuthTokens = await res.json();
+    setTokens(tokens.access_token, tokens.refresh_token);
+    return tokens;
+  },
+
+  async login(email: string, password: string): Promise<AuthTokens> {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Invalid credentials" }));
+      throw new Error(err.detail || "Invalid credentials");
+    }
+    const tokens: AuthTokens = await res.json();
+    setTokens(tokens.access_token, tokens.refresh_token);
+    return tokens;
+  },
+
+  async getProfile(): Promise<UserProfile | null> {
+    if (!_accessToken) return null;
+    try {
+      const res = await fetch(`${API_BASE}/auth/me`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  logout() {
+    clearTokens();
+  },
+
+  isAuthenticated(): boolean {
+    return !!_accessToken;
+  },
+
+  // Chat (non-streaming)
   async sendChat(payload: ChatRequest): Promise<ChatResponse> {
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       return await res.json();
     } catch (e) {
       console.warn("Backend unavailable, using simulated response:", e);
-      // Realistic simulated response for rich demo preview
       const reqId = `req-${Date.now().toString(36)}`;
       const isFin = payload.query.toLowerCase().includes("margin") || payload.query.toLowerCase().includes("revenue") || payload.query.toLowerCase().includes("q3");
       const isSecurity = payload.query.toLowerCase().includes("soc") || payload.query.toLowerCase().includes("audit") || payload.query.toLowerCase().includes("security");
@@ -368,6 +676,103 @@ export const api = {
       };
     }
   },
+
+  // Chat (SSE Streaming)
+  streamChat(
+    payload: ChatRequest,
+    onEvent: (event: StreamEvent) => void,
+    onError?: (error: Error) => void,
+  ): AbortController {
+    const controller = new AbortController();
+
+    (async () => {
+      let receivedRealEvent = false;
+      try {
+        const res = await fetch(`${API_BASE}/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+        if (!res.body) throw new Error("No response body");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          let currentEventType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              currentEventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ") && currentEventType) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                receivedRealEvent = true;
+                onEvent({ type: currentEventType as StreamEventType, data });
+              } catch {
+                // skip malformed JSON
+              }
+              currentEventType = "";
+            }
+          }
+        }
+      } catch (e: any) {
+        if (e.name === "AbortError") return;
+        onError?.(e);
+        // Simulated stream is only a safe fallback when NOTHING was streamed
+        // yet (e.g. backend unreachable). If real events already arrived,
+        // replaying the mock would fabricate/append a fake answer.
+        if (!receivedRealEvent) {
+          console.warn("Stream failed before any event; using simulated stream:", e);
+          _simulateStream(payload, onEvent);
+        } else {
+          console.warn("Stream failed mid-stream after real events:", e);
+          onEvent({
+            type: "validation",
+            data: { passed: false, issues: ["Connection lost mid-stream. The response above may be incomplete."], errors: ["Connection lost mid-stream."] },
+          });
+          onEvent({
+            type: "done",
+            data: { validation_failed: true, incomplete: true },
+          });
+        }
+      }
+    })();
+
+    return controller;
+  },
+
+  // ─── Conversations ──────────────────────────────────────────────────────
+  async getConversations(): Promise<ConversationSummary[]> {
+    try {
+      const res = await fetch(`${API_BASE}/conversations`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      console.warn("Conversations fallback:", e);
+      return [];
+    }
+  },
+
+  async deleteConversation(id: string): Promise<void> {
+    await fetch(`${API_BASE}/conversations/${id}`, {
+      method: "DELETE",
+      headers: getAuthHeaders(),
+    });
+  },
+
 
   // Documents
   async getDocuments(): Promise<DocumentItem[]> {

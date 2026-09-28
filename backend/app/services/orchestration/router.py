@@ -77,6 +77,17 @@ def classify_intent(query: str) -> RoutingDecision:
             latency_ms=int((time.perf_counter() - t0) * 1000),
         )
 
+    # Multi-step must be checked BEFORE summarize/sql: queries like
+    # "First summarize section 4 and then compare it" contain keywords of
+    # both, but require the orchestrated workflow, not a single route.
+    if _MULTI_STEP_PATTERNS.search(q):
+        return RoutingDecision(
+            route=ROUTE_WORKFLOW,
+            confidence=0.85,
+            reason="Query appears to require multiple steps",
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
+
     if _SUMMARIZE_PATTERNS.search(q):
         return RoutingDecision(
             route=ROUTE_SUMMARIZE,
@@ -90,14 +101,6 @@ def classify_intent(query: str) -> RoutingDecision:
             route=ROUTE_SQL,
             confidence=0.80,
             reason="Query contains structured data / aggregation keywords",
-            latency_ms=int((time.perf_counter() - t0) * 1000),
-        )
-
-    if _MULTI_STEP_PATTERNS.search(q):
-        return RoutingDecision(
-            route=ROUTE_WORKFLOW,
-            confidence=0.75,
-            reason="Query appears to require multiple steps",
             latency_ms=int((time.perf_counter() - t0) * 1000),
         )
 
